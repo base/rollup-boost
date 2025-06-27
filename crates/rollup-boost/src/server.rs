@@ -130,6 +130,10 @@ impl RollupBoostServer {
 
         let builder_healthy = matches!(self.probes.health(), Health::Healthy);
 
+        info!("allow traffic to unhealthy builder: {}", self.allow_traffic_to_unhealthy_builder);
+        info!("builder healthy: {}", builder_healthy);
+        info!("execution mode: {}", self.execution_mode().is_disabled());
+
         // async call to builder to sync the builder node
         if !self.execution_mode().is_disabled()
             && (self.allow_traffic_to_unhealthy_builder || builder_healthy)
@@ -193,6 +197,10 @@ impl RollupBoostServer {
                 tracing::Span::current().record("builder_has_payload", false);
                 return RpcResult::Ok(None);
             }
+
+            info!("allow traffic to unhealthy builder: {}", self.allow_traffic_to_unhealthy_builder);
+            info!("builder healthy: {}", matches!(self.probes.health(), Health::Healthy));
+            info!("execution mode: {}", self.execution_mode().is_disabled());
 
             if !self.allow_traffic_to_unhealthy_builder
                 && !matches!(self.probes.health(), Health::Healthy)
@@ -430,6 +438,10 @@ impl EngineApiServer for RollupBoostServer {
         if self.execution_mode().is_disabled() {
             return Ok(l2_fut.await?);
         }
+
+        info!("allow traffic to unhealthy builder: {}", self.allow_traffic_to_unhealthy_builder);
+        info!("builder healthy: {}", builder_healthy);
+        info!("execution mode: {}", self.execution_mode().is_disabled());
 
         if !self.allow_traffic_to_unhealthy_builder && !builder_healthy {
             info!(message = "builder is unhealthy, skipping FCU to builder");
