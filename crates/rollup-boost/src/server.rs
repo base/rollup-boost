@@ -137,7 +137,7 @@ impl RollupBoostServer {
                 message = "Allow new_payload to builder",
                 allow_traffic_to_unhealthy_builder = self.allow_traffic_to_unhealthy_builder,
                 builder_healthy = builder_healthy,
-                execution_mode = self.execution_mode().is_disabled()
+                execution_mode = self.execution_mode().is_enabled()
             );
             let builder = self.builder_client.clone();
             let new_payload_clone = new_payload.clone();
@@ -202,8 +202,8 @@ impl RollupBoostServer {
             info!(
                 message = "Allow get_payload to builder",
                 allow_traffic_to_unhealthy_builder = self.allow_traffic_to_unhealthy_builder,
-                builder_healthy = builder_healthy,
-                execution_mode = self.execution_mode().is_disabled()
+                builder_healthy = matches!(self.probes.health(), Health::Healthy),
+                execution_mode = self.execution_mode().is_enabled()
             );
 
             if !self.allow_traffic_to_unhealthy_builder
@@ -452,7 +452,7 @@ impl EngineApiServer for RollupBoostServer {
             message = "Allow FCU to builder",
             allow_traffic_to_unhealthy_builder = self.allow_traffic_to_unhealthy_builder,
             builder_healthy = builder_healthy,
-            execution_mode = self.execution_mode().is_disabled()
+            execution_mode = self.execution_mode().is_enabled()
         );
 
         let span = tracing::Span::current();
