@@ -68,7 +68,6 @@ impl RollupBoostServer {
         use_l2_client_for_state_root: bool,
         allow_traffic_to_unhealthy_builder: bool,
     ) -> Self {
-        info!("allow traffic to unhealthy builder: {}", allow_traffic_to_unhealthy_builder);
         Self {
             l2_client: Arc::new(l2_client),
             builder_client,
@@ -130,14 +129,16 @@ impl RollupBoostServer {
 
         let builder_healthy = matches!(self.probes.health(), Health::Healthy);
 
-        info!("allow traffic to unhealthy builder: {}", self.allow_traffic_to_unhealthy_builder);
-        info!("builder healthy: {}", builder_healthy);
-        info!("execution mode: {}", self.execution_mode().is_disabled());
-
         // async call to builder to sync the builder node
         if !self.execution_mode().is_disabled()
             && (self.allow_traffic_to_unhealthy_builder || builder_healthy)
         {
+            info!(
+                message = "Allow new_payload to builder",
+                allow_traffic_to_unhealthy_builder = self.allow_traffic_to_unhealthy_builder,
+                builder_healthy = builder_healthy,
+                execution_mode = self.execution_mode().is_disabled()
+            );
             let builder = self.builder_client.clone();
             let new_payload_clone = new_payload.clone();
             tokio::spawn(async move { builder.new_payload(new_payload_clone).await });
@@ -198,9 +199,12 @@ impl RollupBoostServer {
                 return RpcResult::Ok(None);
             }
 
-            info!("allow traffic to unhealthy builder: {}", self.allow_traffic_to_unhealthy_builder);
-            info!("builder healthy: {}", matches!(self.probes.health(), Health::Healthy));
-            info!("execution mode: {}", self.execution_mode().is_disabled());
+            info!(
+                message = "Allow get_payload to builder",
+                allow_traffic_to_unhealthy_builder = self.allow_traffic_to_unhealthy_builder,
+                builder_healthy = builder_healthy,
+                execution_mode = self.execution_mode().is_disabled()
+            );
 
             if !self.allow_traffic_to_unhealthy_builder
                 && !matches!(self.probes.health(), Health::Healthy)
@@ -439,14 +443,17 @@ impl EngineApiServer for RollupBoostServer {
             return Ok(l2_fut.await?);
         }
 
-        info!("allow traffic to unhealthy builder: {}", self.allow_traffic_to_unhealthy_builder);
-        info!("builder healthy: {}", builder_healthy);
-        info!("execution mode: {}", self.execution_mode().is_disabled());
-
         if !self.allow_traffic_to_unhealthy_builder && !builder_healthy {
             info!(message = "builder is unhealthy, skipping FCU to builder");
             return Ok(l2_fut.await?);
         }
+
+        info!(
+            message = "Allow FCU to builder",
+            allow_traffic_to_unhealthy_builder = self.allow_traffic_to_unhealthy_builder,
+            builder_healthy = builder_healthy,
+            execution_mode = self.execution_mode().is_disabled()
+        );
 
         let span = tracing::Span::current();
         // If the fcu contains payload attributes and the tx pool is disabled,
