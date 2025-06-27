@@ -68,6 +68,7 @@ impl RollupBoostServer {
         use_l2_client_for_state_root: bool,
         allow_traffic_to_unhealthy_builder: bool,
     ) -> Self {
+        info!("allow traffic to unhealthy builder: {}", allow_traffic_to_unhealthy_builder);
         Self {
             l2_client: Arc::new(l2_client),
             builder_client,
