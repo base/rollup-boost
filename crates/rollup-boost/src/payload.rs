@@ -134,6 +134,24 @@ impl OpExecutionPayloadEnvelope {
             },
         }
     }
+
+    pub fn state_root(&self) -> B256 {
+        match self {
+            OpExecutionPayloadEnvelope::V3(payload) => payload
+                .execution_payload
+                .payload_inner
+                .payload_inner
+                .state_root
+                .into(),
+            OpExecutionPayloadEnvelope::V4(payload) => payload
+                .execution_payload
+                .payload_inner
+                .payload_inner
+                .payload_inner
+                .state_root
+                .into(),
+        }
+    }
 }
 
 impl From<OpExecutionPayloadEnvelope> for ExecutionPayload {

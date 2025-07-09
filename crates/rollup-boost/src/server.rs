@@ -206,7 +206,10 @@ impl RollupBoostServer {
 
             let payload = self.builder_client.get_payload(payload_id, version).await?;
 
-            if self.use_l2_client_for_state_root == false {
+            let should_use_l2_client_for_state_root =
+                self.use_l2_client_for_state_root && payload.state_root() == B256::ZERO;
+
+            if !should_use_l2_client_for_state_root {
                 let _ = self
                     .l2_client
                     .new_payload(NewPayload::from(payload.clone()))
