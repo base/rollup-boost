@@ -9,7 +9,7 @@ use tokio::{
     task::JoinHandle,
     time::{Instant, sleep_until},
 };
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{EngineApiExt, ExecutionMode, Health, Probes};
 
@@ -43,6 +43,7 @@ impl HealthHandle {
     /// the current time minus the max_unsafe_interval.
     pub fn spawn(self) -> JoinHandle<()> {
         tokio::spawn(async move {
+            info!(target: "rollup_boost::health", "running health check");
             let mut timestamp = MonotonicTimestamp::new();
 
             loop {
