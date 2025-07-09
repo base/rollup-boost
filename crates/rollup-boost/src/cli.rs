@@ -35,7 +35,7 @@ pub struct Args {
     pub l2_client: L2ClientArgs,
 
     /// Duration in seconds between async health checks on the builder
-    #[arg(long, env, default_value = "60")]
+    #[arg(long, env, default_value = "5")]
     pub health_check_interval: u64,
 
     /// Max duration in seconds between the unsafe head block of the builder and the current time
