@@ -179,8 +179,9 @@ impl RollupBoostServer {
         }
 
         // Forward the get payload request to the builder
-        // Returns (payload_option, builder_api_failed)  
-        let builder_fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<(Option<OpExecutionPayloadEnvelope>, bool), jsonrpsee::types::ErrorObject<'static>>> + Send>> = Box::pin(async {
+        // Returns (payload_option, builder_api_failed)
+        type BuilderResult = Result<(Option<OpExecutionPayloadEnvelope>, bool), ErrorObject<'static>>;
+        let builder_fut = async move {
             if let Some(cause) = self.payload_trace_context.trace_id(&payload_id).await {
                 tracing::Span::current().follows_from(cause);
             }
@@ -191,14 +192,14 @@ impl RollupBoostServer {
             {
                 info!(message = "builder has no payload, skipping get_payload call to builder");
                 tracing::Span::current().record("builder_has_payload", false);
-                return Ok((None, true));
+                return BuilderResult::Ok((None, true));
             }
 
             if !self.allow_traffic_to_unhealthy_builder
                 && !matches!(self.probes.health(), Health::Healthy)
             {
                 info!(message = "builder is unhealthy, skipping get_payload call to builder");
-                return Ok((None, true));
+                return BuilderResult::Ok((None, true));
             }
 
             // Get payload and validate with the local l2 client
@@ -210,7 +211,7 @@ impl RollupBoostServer {
                 Ok(payload) => payload,
                 Err(e) => {
                     error!(message = "builder get_payload API failed", error = %e);
-                    return Ok((None, true)); // Builder API failed
+                    return BuilderResult::Ok((None, true)); // Builder API failed
                 }
             };
 
@@ -220,10 +221,10 @@ impl RollupBoostServer {
                     .new_payload(NewPayload::from(payload.clone()))
                     .await
                 {
-                    Ok(_) => return Ok((Some(payload), false)),
+                    Ok(_) => return BuilderResult::Ok((Some(payload), false)),
                     Err(e) => {
                         error!(message = "L2 validation failed, but builder API succeeded", error = %e);
-                        return Ok((None, false)); // L2 processing failed, not builder API
+                        return BuilderResult::Ok((None, false)); // L2 processing failed, not builder API
                     }
                 }
             }
@@ -261,7 +262,7 @@ impl RollupBoostServer {
                 Ok(result) => result,
                 Err(e) => {
                     error!(message = "L2 FCU failed, failed to start state root calculation", error = %e);
-                    return Ok((None, false)); // L2 processing failed, not builder API
+                    return BuilderResult::Ok((None, false)); // L2 processing failed, not builder API
                 }
             };
 
@@ -279,18 +280,18 @@ impl RollupBoostServer {
                             message = "received new state root payload from l2",
                             payload = ?new_payload,
                         );
-                        return Ok((Some(new_payload), false));
+                        return BuilderResult::Ok((Some(new_payload), false));
                     }
 
                     Err(e) => {
                         error!(message = "error getting new state root payload from l2", error = %e);
-                        return Ok((None, false)); // L2 processing failed, not builder API
+                        return BuilderResult::Ok((None, false)); // L2 processing failed, not builder API
                     }
                 }
             }
 
-            Ok((None, false))
-        });
+            BuilderResult::Ok((None, false))
+        };
 
         let (builder_result, l2_payload) = tokio::join!(builder_fut, l2_fut);
 
