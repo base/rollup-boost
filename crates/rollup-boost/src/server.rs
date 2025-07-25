@@ -1183,4 +1183,147 @@ pub mod tests {
             .await;
         assert!(fcu_response.is_err());
     }
+
+    #[tokio::test]
+    async fn builder_api_failure_vs_processing_failure() {
+        // Test that only builder API failures mark builder as unhealthy,
+        // not L2 processing failures after successful builder API calls
+        
+        // Test 1: Builder API failure should mark as unhealthy
+        {
+            let mut l2_mock = MockEngineServer::new();
+            // Ensure L2 returns a payload ID
+            l2_mock.fcu_response = Ok(ForkchoiceUpdated::new(PayloadStatus::from_status(PayloadStatusEnum::Valid))
+                .with_payload_id(PayloadId::new([0, 0, 0, 0, 0, 0, 0, 1])));
+
+            let mut builder_mock = MockEngineServer::new();
+            // Make builder API fail
+            builder_mock.get_payload_response = Err(ErrorObject::owned(
+                INVALID_REQUEST_CODE,
+                "Builder API failed",
+                None::<String>,
+            ));
+            // Builder should also return same payload ID for FCU
+            builder_mock.fcu_response = Ok(ForkchoiceUpdated::new(PayloadStatus::from_status(PayloadStatusEnum::Valid))
+                .with_payload_id(PayloadId::new([0, 0, 0, 0, 0, 0, 0, 1])));
+
+            let test_harness = TestHarness::new(Some(l2_mock), Some(builder_mock)).await;
+
+            // Send FCU with payload attributes to trigger builder request
+            let fcu = ForkchoiceState {
+                head_block_hash: FixedBytes::random(),
+                safe_block_hash: FixedBytes::random(),
+                finalized_block_hash: FixedBytes::random(),
+            };
+            let payload_attributes = OpPayloadAttributes {
+                gas_limit: Some(1000000),
+                ..Default::default()
+            };
+            let fcu_response = test_harness
+                .rpc_client
+                .fork_choice_updated_v3(fcu, Some(payload_attributes))
+                .await;
+            assert!(fcu_response.is_ok());
+
+            // Get payload should fail and mark builder as unhealthy
+            let payload_id = fcu_response.unwrap().payload_id.unwrap();
+            let get_payload_response = test_harness
+                .rpc_client
+                .get_payload_v3(payload_id)
+                .await;
+            assert!(get_payload_response.is_ok()); // Should fallback to L2
+
+            // Health should be PartialContent because builder API failed
+            let health = test_harness.get("healthz").await;
+            assert_eq!(health.status(), StatusCode::PARTIAL_CONTENT);
+
+            test_harness.cleanup().await;
+        }
+
+        // Test 2: L2 processing failure should NOT mark builder as unhealthy
+        {
+            let mut l2_mock = MockEngineServer::new();
+            // Ensure L2 returns a payload ID
+            l2_mock.fcu_response = Ok(ForkchoiceUpdated::new(PayloadStatus::from_status(PayloadStatusEnum::Valid))
+                .with_payload_id(PayloadId::new([0, 0, 0, 0, 0, 0, 0, 2])));
+            // Make L2 validation fail but builder API succeed
+            l2_mock.new_payload_response = Err(ErrorObject::owned(
+                INVALID_REQUEST_CODE,
+                "L2 validation failed",
+                None::<String>,
+            ));
+
+            let mut builder_mock = MockEngineServer::new();
+            // Builder should also return same payload ID for FCU
+            builder_mock.fcu_response = Ok(ForkchoiceUpdated::new(PayloadStatus::from_status(PayloadStatusEnum::Valid))
+                .with_payload_id(PayloadId::new([0, 0, 0, 0, 0, 0, 0, 2])));
+            // Builder API succeeds
+            builder_mock.get_payload_response = Ok(OpExecutionPayloadEnvelopeV3{
+                execution_payload: ExecutionPayloadV3 {
+                        payload_inner: ExecutionPayloadV2 {
+                            payload_inner: ExecutionPayloadV1 {
+                                base_fee_per_gas:  U256::from(7u64),
+                                block_number: 0xa946u64,
+                                block_hash: hex!("a5ddd3f286f429458a39cafc13ffe89295a7efa8eb363cf89a1a4887dbcf272b").into(),
+                                logs_bloom: hex!("00200004000000000000000080000000000200000000000000000000000000000000200000000000000000000000000000000000800000000200000000000000000000000000000000000008000000200000000000000000000001000000000000000000000000000000800000000000000000000100000000000030000000000000000040000000000000000000000000000000000800080080404000000000000008000000000008200000000000200000000000000000000000000000000000000002000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000100000000000000000000").into(),
+                                extra_data: hex!("d883010d03846765746888676f312e32312e31856c696e7578").into(),
+                                gas_limit: 0x1c9c380,
+                                gas_used: 0x1f4a9,
+                                timestamp: 0x651f35b8,
+                                fee_recipient: hex!("f97e180c050e5ab072211ad2c213eb5aee4df134").into(),
+                                parent_hash: hex!("d829192799c73ef28a7332313b3c03af1f2d5da2c36f8ecfafe7a83a3bfb8d1e").into(),
+                                prev_randao: hex!("753888cc4adfbeb9e24e01c84233f9d204f4a9e1273f0e29b43c4c148b2b8b7e").into(),
+                                receipts_root: hex!("4cbc48e87389399a0ea0b382b1c46962c4b8e398014bf0cc610f9c672bee3155").into(),
+                                state_root: hex!("017d7fa2b5adb480f5e05b2c95cb4186e12062eed893fc8822798eed134329d1").into(),
+                                transactions: vec![],
+                            },
+                            withdrawals: vec![],
+                        },
+                        blob_gas_used: 0xc0000,
+                    excess_blob_gas: 0x580000,
+                },
+                block_value: U256::from(15),
+                blobs_bundle: BlobsBundleV1{
+                    commitments: vec![],
+                    proofs: vec![],
+                    blobs: vec![],
+                },
+                should_override_builder: false,
+                parent_beacon_block_root: B256::ZERO,
+            });
+
+            let test_harness = TestHarness::new(Some(l2_mock), Some(builder_mock)).await;
+
+            // Send FCU with payload attributes to trigger builder request
+            let fcu = ForkchoiceState {
+                head_block_hash: FixedBytes::random(),
+                safe_block_hash: FixedBytes::random(),
+                finalized_block_hash: FixedBytes::random(),
+            };
+            let payload_attributes = OpPayloadAttributes {
+                gas_limit: Some(1000000),
+                ..Default::default()
+            };
+            let fcu_response = test_harness
+                .rpc_client
+                .fork_choice_updated_v3(fcu, Some(payload_attributes))
+                .await;
+            assert!(fcu_response.is_ok());
+
+            // Get payload - builder API succeeds but L2 processing fails
+            let payload_id = fcu_response.unwrap().payload_id.unwrap();
+            let get_payload_response = test_harness
+                .rpc_client
+                .get_payload_v3(payload_id)
+                .await;
+            assert!(get_payload_response.is_ok()); // Should fallback to L2
+
+            // Health should remain Healthy because builder API succeeded
+            // (L2 processing failure doesn't affect builder health)
+            let health = test_harness.get("healthz").await;
+            assert_eq!(health.status(), StatusCode::OK);
+
+            test_harness.cleanup().await;
+        }
+    }
 }
