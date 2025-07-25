@@ -215,7 +215,6 @@ impl RollupBoostServer {
             };
 
             if self.use_l2_client_for_state_root == false {
-                // If L2 validation fails, it's a processing error, not builder API error
                 match self
                     .l2_client
                     .new_payload(NewPayload::from(payload.clone()))
@@ -254,7 +253,6 @@ impl RollupBoostServer {
                 },
             };
             
-            // If L2 FCU fails, it's a processing error, not builder API error
             let l2_result = match self
                 .l2_client
                 .fork_choice_updated_v3(fcu_info.0, Some(new_payload_attrs))
@@ -262,7 +260,7 @@ impl RollupBoostServer {
             {
                 Ok(result) => result,
                 Err(e) => {
-                    error!(message = "L2 FCU failed, but builder API succeeded", error = %e);
+                    error!(message = "L2 FCU failed, failed to start state root calculation", error = %e);
                     return Ok((None, false)); // L2 processing failed, not builder API
                 }
             };
@@ -285,7 +283,7 @@ impl RollupBoostServer {
                     }
 
                     Err(e) => {
-                        error!(message = "L2 get_payload failed, but builder API succeeded", error = %e);
+                        error!(message = "error getting new state root payload from l2", error = %e);
                         return Ok((None, false)); // L2 processing failed, not builder API
                     }
                 }
@@ -302,12 +300,12 @@ impl RollupBoostServer {
                 l2_payload.inspect_err(|_| self.probes.set_health(Health::ServiceUnavailable))?;
             self.probes.set_health(Health::Healthy);
 
-            // Extract builder payload and whether builder API failed
+            // Convert Result<Option<Payload>> to Option<Payload> by extracting the inner Option.
             let (builder_payload, builder_api_failed) = match builder_result {
                 Ok((payload, api_failed)) => (payload, api_failed),
                 Err(e) => {
-                    error!(message = "error in builder future", error = %e);
-                    (None, false) // Future failed, but not necessarily builder API
+                    error!(message = "error getting payload from builder", error = %e);
+                    (None, false)
                 }
             };
 
@@ -334,7 +332,7 @@ impl RollupBoostServer {
                     (builder_payload, PayloadSource::Builder)
                 }
             } else {
-                // Only update the health status if the builder API itself failed
+                // Only update the health status if the builder payload fails
                 // and execution mode is not set to DryRun
                 if builder_api_failed && !self.execution_mode().is_dry_run() {
                     self.probes.set_health(Health::PartialContent);
@@ -950,10 +948,10 @@ pub mod tests {
             assert_eq!(*req, PayloadId::new([0, 0, 0, 0, 0, 0, 0, 1]));
         }
 
-        // Now that a block has been produced by the l2 but the builder was never asked to build
-        // (FCU without payload attributes), the health status should remain Healthy
+        // Now that a block has been produced by the l2 but not the builder
+        // the health status should be Partial Content
         let health = test_harness.get("healthz").await;
-        assert_eq!(health.status(), StatusCode::OK);
+        assert_eq!(health.status(), StatusCode::PARTIAL_CONTENT);
 
         test_harness.cleanup().await;
     }
