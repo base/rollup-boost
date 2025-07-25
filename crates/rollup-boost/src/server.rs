@@ -1258,39 +1258,10 @@ pub mod tests {
             // Builder should also return same payload ID for FCU
             builder_mock.fcu_response = Ok(ForkchoiceUpdated::new(PayloadStatus::from_status(PayloadStatusEnum::Valid))
                 .with_payload_id(PayloadId::new([0, 0, 0, 0, 0, 0, 0, 2])));
-            // Builder API succeeds
-            builder_mock.get_payload_response = Ok(OpExecutionPayloadEnvelopeV3{
-                execution_payload: ExecutionPayloadV3 {
-                        payload_inner: ExecutionPayloadV2 {
-                            payload_inner: ExecutionPayloadV1 {
-                                base_fee_per_gas:  U256::from(7u64),
-                                block_number: 0xa946u64,
-                                block_hash: hex!("a5ddd3f286f429458a39cafc13ffe89295a7efa8eb363cf89a1a4887dbcf272b").into(),
-                                logs_bloom: hex!("00200004000000000000000080000000000200000000000000000000000000000000200000000000000000000000000000000000800000000200000000000000000000000000000000000008000000200000000000000000000001000000000000000000000000000000800000000000000000000100000000000030000000000000000040000000000000000000000000000000000800080080404000000000000008000000000008200000000000200000000000000000000000000000000000000002000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000100000000000000000000").into(),
-                                extra_data: hex!("d883010d03846765746888676f312e32312e31856c696e7578").into(),
-                                gas_limit: 0x1c9c380,
-                                gas_used: 0x1f4a9,
-                                timestamp: 0x651f35b8,
-                                fee_recipient: hex!("f97e180c050e5ab072211ad2c213eb5aee4df134").into(),
-                                parent_hash: hex!("d829192799c73ef28a7332313b3c03af1f2d5da2c36f8ecfafe7a83a3bfb8d1e").into(),
-                                prev_randao: hex!("753888cc4adfbeb9e24e01c84233f9d204f4a9e1273f0e29b43c4c148b2b8b7e").into(),
-                                receipts_root: hex!("4cbc48e87389399a0ea0b382b1c46962c4b8e398014bf0cc610f9c672bee3155").into(),
-                                state_root: hex!("017d7fa2b5adb480f5e05b2c95cb4186e12062eed893fc8822798eed134329d1").into(),
-                                transactions: vec![],
-                            },
-                            withdrawals: vec![],
-                        },
-                        blob_gas_used: 0xc0000,
-                    excess_blob_gas: 0x580000,
-                },
-                block_value: U256::from(15),
-                blobs_bundle: BlobsBundleV1{
-                    commitments: vec![],
-                    proofs: vec![],
-                    blobs: vec![],
-                },
-                should_override_builder: false,
-                parent_beacon_block_root: B256::ZERO,
+            // Builder API succeeds - just modify the block value from default
+            builder_mock.get_payload_response = builder_mock.get_payload_response.clone().map(|mut payload| {
+                payload.block_value = U256::from(15);
+                payload
             });
 
             let test_harness = TestHarness::new(Some(l2_mock), Some(builder_mock)).await;
