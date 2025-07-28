@@ -179,7 +179,9 @@ impl RollupBoostServer {
         }
 
         // Forward the get payload request to the builder
-        let builder_fut = async {
+        // Returns (payload_option, builder_api_failed)
+        type BuilderResult = Result<(Option<OpExecutionPayloadEnvelope>, bool), ErrorObject<'static>>;
+        let builder_fut = async move {
             if let Some(cause) = self.payload_trace_context.trace_id(&payload_id).await {
                 tracing::Span::current().follows_from(cause);
             }
@@ -190,29 +192,41 @@ impl RollupBoostServer {
             {
                 info!(message = "builder has no payload, skipping get_payload call to builder");
                 tracing::Span::current().record("builder_has_payload", false);
-                return RpcResult::Ok(None);
+                return BuilderResult::Ok((None, true));
             }
 
             if !self.allow_traffic_to_unhealthy_builder
                 && !matches!(self.probes.health(), Health::Healthy)
             {
                 info!(message = "builder is unhealthy, skipping get_payload call to builder");
-                return RpcResult::Ok(None);
+                return BuilderResult::Ok((None, true));
             }
 
             // Get payload and validate with the local l2 client
             tracing::Span::current().record("builder_has_payload", true);
             info!(message = "builder has payload, calling get_payload on builder");
 
-            let payload = self.builder_client.get_payload(payload_id, version).await?;
+            // Try to get payload from builder - this is the critical API call
+            let payload = match self.builder_client.get_payload(payload_id, version).await {
+                Ok(payload) => payload,
+                Err(e) => {
+                    error!(message = "builder get_payload API failed", error = %e);
+                    return BuilderResult::Ok((None, true)); // Builder API failed
+                }
+            };
 
             if self.use_l2_client_for_state_root == false {
-                let _ = self
+                match self
                     .l2_client
                     .new_payload(NewPayload::from(payload.clone()))
-                    .await?;
-
-                return Ok(Some(payload));
+                    .await
+                {
+                    Ok(_) => return BuilderResult::Ok((Some(payload), false)),
+                    Err(e) => {
+                        error!(message = "L2 validation failed, but builder API succeeded", error = %e);
+                        return BuilderResult::Ok((None, false)); // L2 processing failed, not builder API
+                    }
+                }
             }
 
             let fcu_info = self
@@ -239,10 +253,18 @@ impl RollupBoostServer {
                     eip_1559_params: None,
                 },
             };
-            let l2_result = self
+            
+            let l2_result = match self
                 .l2_client
                 .fork_choice_updated_v3(fcu_info.0, Some(new_payload_attrs))
-                .await?;
+                .await
+            {
+                Ok(result) => result,
+                Err(e) => {
+                    error!(message = "L2 FCU failed, failed to start state root calculation", error = %e);
+                    return BuilderResult::Ok((None, false)); // L2 processing failed, not builder API
+                }
+            };
 
             if let Some(new_payload_id) = l2_result.payload_id {
                 debug!(
@@ -258,20 +280,20 @@ impl RollupBoostServer {
                             message = "received new state root payload from l2",
                             payload = ?new_payload,
                         );
-                        return Ok(Some(new_payload));
+                        return BuilderResult::Ok((Some(new_payload), false));
                     }
 
                     Err(e) => {
                         error!(message = "error getting new state root payload from l2", error = %e);
-                        return Err(e.into());
+                        return BuilderResult::Ok((None, false)); // L2 processing failed, not builder API
                     }
                 }
             }
 
-            Ok(None)
+            BuilderResult::Ok((None, false))
         };
 
-        let (builder_payload, l2_payload) = tokio::join!(builder_fut, l2_fut);
+        let (builder_result, l2_payload) = tokio::join!(builder_fut, l2_fut);
 
         // Evaluate the builder and l2 response and select the final payload
         let (payload, context) = {
@@ -280,13 +302,13 @@ impl RollupBoostServer {
             self.probes.set_health(Health::Healthy);
 
             // Convert Result<Option<Payload>> to Option<Payload> by extracting the inner Option.
-            // If there's an error, log it and return None instead.
-            let builder_payload = builder_payload
-                .map_err(|e| {
+            let (builder_payload, builder_api_failed) = match builder_result {
+                Ok((payload, api_failed)) => (payload, api_failed),
+                Err(e) => {
                     error!(message = "error getting payload from builder", error = %e);
-                    e
-                })
-                .unwrap_or(None);
+                    (None, false)
+                }
+            };
 
             if let Some(builder_payload) = builder_payload {
                 // Record the delta (gas and txn) between the builder and l2 payload
@@ -313,7 +335,7 @@ impl RollupBoostServer {
             } else {
                 // Only update the health status if the builder payload fails
                 // and execution mode is not set to DryRun
-                if !self.execution_mode().is_dry_run() {
+                if builder_api_failed && !self.execution_mode().is_dry_run() {
                     self.probes.set_health(Health::PartialContent);
                 }
                 (l2_payload, PayloadSource::L2)
@@ -1161,5 +1183,119 @@ pub mod tests {
             .fork_choice_updated_v3(fcu, Some(payload_attributes))
             .await;
         assert!(fcu_response.is_err());
+    }
+
+    #[tokio::test]
+    async fn builder_api_failure_vs_processing_failure() {
+        // Test that only builder API failures mark builder as unhealthy,
+        // not L2 processing failures after successful builder API calls
+        
+        // Test 1: Builder API failure should mark as unhealthy
+        {
+            let mut l2_mock = MockEngineServer::new();
+            // Ensure L2 returns a payload ID
+            l2_mock.fcu_response = Ok(ForkchoiceUpdated::new(PayloadStatus::from_status(PayloadStatusEnum::Valid))
+                .with_payload_id(PayloadId::new([0, 0, 0, 0, 0, 0, 0, 1])));
+
+            let mut builder_mock = MockEngineServer::new();
+            // Make builder API fail
+            builder_mock.get_payload_response = Err(ErrorObject::owned(
+                INVALID_REQUEST_CODE,
+                "Builder API failed",
+                None::<String>,
+            ));
+            // Builder should also return same payload ID for FCU
+            builder_mock.fcu_response = Ok(ForkchoiceUpdated::new(PayloadStatus::from_status(PayloadStatusEnum::Valid))
+                .with_payload_id(PayloadId::new([0, 0, 0, 0, 0, 0, 0, 1])));
+
+            let test_harness = TestHarness::new(Some(l2_mock), Some(builder_mock)).await;
+
+            // Send FCU with payload attributes to trigger builder request
+            let fcu = ForkchoiceState {
+                head_block_hash: FixedBytes::random(),
+                safe_block_hash: FixedBytes::random(),
+                finalized_block_hash: FixedBytes::random(),
+            };
+            let payload_attributes = OpPayloadAttributes {
+                gas_limit: Some(1000000),
+                ..Default::default()
+            };
+            let fcu_response = test_harness
+                .rpc_client
+                .fork_choice_updated_v3(fcu, Some(payload_attributes))
+                .await;
+            assert!(fcu_response.is_ok());
+
+            // Get payload should fail and mark builder as unhealthy
+            let payload_id = fcu_response.unwrap().payload_id.unwrap();
+            let get_payload_response = test_harness
+                .rpc_client
+                .get_payload_v3(payload_id)
+                .await;
+            assert!(get_payload_response.is_ok()); // Should fallback to L2
+
+            // Health should be PartialContent because builder API failed
+            let health = test_harness.get("healthz").await;
+            assert_eq!(health.status(), StatusCode::PARTIAL_CONTENT);
+
+            test_harness.cleanup().await;
+        }
+
+        // Test 2: L2 processing failure should NOT mark builder as unhealthy
+        {
+            let mut l2_mock = MockEngineServer::new();
+            // Ensure L2 returns a payload ID
+            l2_mock.fcu_response = Ok(ForkchoiceUpdated::new(PayloadStatus::from_status(PayloadStatusEnum::Valid))
+                .with_payload_id(PayloadId::new([0, 0, 0, 0, 0, 0, 0, 2])));
+            // Make L2 validation fail but builder API succeed
+            l2_mock.new_payload_response = Err(ErrorObject::owned(
+                INVALID_REQUEST_CODE,
+                "L2 validation failed",
+                None::<String>,
+            ));
+
+            let mut builder_mock = MockEngineServer::new();
+            // Builder should also return same payload ID for FCU
+            builder_mock.fcu_response = Ok(ForkchoiceUpdated::new(PayloadStatus::from_status(PayloadStatusEnum::Valid))
+                .with_payload_id(PayloadId::new([0, 0, 0, 0, 0, 0, 0, 2])));
+            // Builder API succeeds - just modify the block value from default
+            builder_mock.get_payload_response = builder_mock.get_payload_response.clone().map(|mut payload| {
+                payload.block_value = U256::from(15);
+                payload
+            });
+
+            let test_harness = TestHarness::new(Some(l2_mock), Some(builder_mock)).await;
+
+            // Send FCU with payload attributes to trigger builder request
+            let fcu = ForkchoiceState {
+                head_block_hash: FixedBytes::random(),
+                safe_block_hash: FixedBytes::random(),
+                finalized_block_hash: FixedBytes::random(),
+            };
+            let payload_attributes = OpPayloadAttributes {
+                gas_limit: Some(1000000),
+                ..Default::default()
+            };
+            let fcu_response = test_harness
+                .rpc_client
+                .fork_choice_updated_v3(fcu, Some(payload_attributes))
+                .await;
+            assert!(fcu_response.is_ok());
+
+            // Get payload - builder API succeeds but L2 processing fails
+            let payload_id = fcu_response.unwrap().payload_id.unwrap();
+            let get_payload_response = test_harness
+                .rpc_client
+                .get_payload_v3(payload_id)
+                .await;
+            assert!(get_payload_response.is_ok()); // Should fallback to L2
+
+            // Health should remain Healthy because builder API succeeded
+            // (L2 processing failure doesn't affect builder health)
+            let health = test_harness.get("healthz").await;
+            assert_eq!(health.status(), StatusCode::OK);
+
+            test_harness.cleanup().await;
+        }
     }
 }
