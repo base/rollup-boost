@@ -59,7 +59,7 @@ pub struct SetHealthOverrideResponse {
 }
 
 #[rpc(server, client, namespace = "debug")]
-trait DebugApi {
+pub trait DebugApi {
     #[method(name = "setExecutionMode")]
     async fn set_execution_mode(
         &self,

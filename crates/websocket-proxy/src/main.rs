@@ -1,28 +1,28 @@
 mod auth;
 mod client;
-#[cfg(all(feature = "integration", test))]
-mod integration;
 mod metrics;
 mod rate_limit;
 mod registry;
 mod server;
 mod subscriber;
 
-use crate::metrics::Metrics;
-use crate::rate_limit::{InMemoryRateLimit, RateLimit};
-use crate::registry::Registry;
-use crate::server::Server;
-use crate::subscriber::WebsocketSubscriber;
+use axum::extract::ws::Message;
 use axum::http::Uri;
 use clap::Parser;
 use dotenvy::dotenv;
+use metrics::Metrics;
 use metrics_exporter_prometheus::PrometheusBuilder;
-use rate_limit::RedisRateLimit;
+use rate_limit::{InMemoryRateLimit, RateLimit, RedisRateLimit};
+use registry::Registry;
+use server::Server;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
+use subscriber::{SubscriberOptions, WebsocketSubscriber};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::broadcast;
+use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, trace, warn, Level};
 use tracing_subscriber::EnvFilter;
@@ -113,8 +113,16 @@ struct Args {
     metrics_host_label: bool,
 
     /// Maximum backoff allowed for upstream connections
-    #[arg(long, env, default_value = "20")]
-    subscriber_max_interval: u64,
+    #[arg(long, env, default_value = "20000")]
+    subscriber_max_interval_ms: u64,
+
+    /// Interval in milliseconds between ping messages sent to upstream servers to detect unresponsive connections
+    #[arg(long, env, default_value = "2000")]
+    subscriber_ping_interval_ms: u64,
+
+    /// Timeout in milliseconds to wait for pong responses from upstream servers before considering the connection dead
+    #[arg(long, env, default_value = "4000")]
+    subscriber_pong_timeout_ms: u64,
 
     #[arg(
         long,
@@ -130,6 +138,30 @@ struct Args {
         help = "Prefix for Redis keys"
     )]
     redis_key_prefix: String,
+
+    #[arg(
+        long,
+        env,
+        default_value = "false",
+        help = "Enable ping/pong client health checks"
+    )]
+    client_ping_enabled: bool,
+
+    #[arg(
+        long,
+        env,
+        default_value = "15000",
+        help = "Interval in milliseconds to send ping messages to clients"
+    )]
+    client_ping_interval_ms: u64,
+
+    #[arg(
+        long,
+        env,
+        default_value = "30000",
+        help = "Timeout in milliseconds to wait for pong response from clients"
+    )]
+    client_pong_timeout_ms: u64,
 }
 
 #[tokio::main]
@@ -164,7 +196,7 @@ async fn main() {
         match auth::Authentication::try_from(api_keys) {
             Ok(auth) => Some(auth),
             Err(e) => {
-                panic!("Failed to parse API Keys: {}", e)
+                panic!("Failed to parse API Keys: {e}")
             }
         }
     };
@@ -229,7 +261,7 @@ async fn main() {
             data.into_bytes()
         };
 
-        match send.send(message_data) {
+        match send.send(message_data.into()) {
             Ok(_) => (),
             Err(e) => error!(message = "failed to send data", error = e.to_string()),
         }
@@ -245,12 +277,15 @@ async fn main() {
         let token_clone = token.clone();
         let metrics_clone = metrics.clone();
 
-        let mut subscriber = WebsocketSubscriber::new(
-            uri_clone.clone(),
-            listener_clone,
-            args.subscriber_max_interval,
-            metrics_clone,
-        );
+        let options = SubscriberOptions::default()
+            .with_max_backoff_interval(Duration::from_millis(args.subscriber_max_interval_ms))
+            .with_ping_interval(Duration::from_millis(args.subscriber_ping_interval_ms))
+            .with_pong_timeout(Duration::from_millis(args.subscriber_pong_timeout_ms))
+            .with_backoff_initial_interval(Duration::from_millis(500))
+            .with_initial_grace_period(Duration::from_secs(5));
+
+        let mut subscriber =
+            WebsocketSubscriber::new(uri_clone.clone(), listener_clone, metrics_clone, options);
 
         let task = tokio::spawn(async move {
             info!(
@@ -264,7 +299,43 @@ async fn main() {
         subscriber_tasks.push(task);
     }
 
-    let registry = Registry::new(sender, metrics.clone());
+    let ping_task = if args.client_ping_enabled {
+        let ping_sender = sender.clone();
+        let ping_token = token.clone();
+        let ping_interval = args.client_ping_interval_ms;
+
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_millis(ping_interval));
+            info!(
+                message = "starting ping sender",
+                interval_ms = ping_interval
+            );
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        match ping_sender.send(Message::Ping(vec![].into())) {
+                            Ok(_) => trace!(message = "sent ping to all clients"),
+                            Err(e) => error!(message = "failed to send ping", error = e.to_string()),
+                        }
+                    }
+                    _ = ping_token.cancelled() => {
+                        info!(message = "ping sender shutting down");
+                        break;
+                    }
+                }
+            }
+        })
+    } else {
+        tokio::spawn(std::future::pending())
+    };
+
+    let registry = Registry::new(
+        sender,
+        metrics.clone(),
+        args.client_ping_enabled,
+        args.client_pong_timeout_ms,
+    );
 
     let rate_limiter = match &args.redis_url {
         Some(redis_url) => {
@@ -322,7 +393,11 @@ async fn main() {
         _ = server_task => {
             info!("server task terminated");
             token.cancel();
-        }
+        },
+        _ = ping_task => {
+            info!("ping task terminated");
+            token.cancel();
+        },
         _ = interrupt.recv() => {
             info!("process interrupted, shutting down");
             token.cancel();
