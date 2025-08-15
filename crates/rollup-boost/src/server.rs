@@ -478,10 +478,6 @@ impl EngineApiServer for RollupBoostServer {
                             span.id(),
                         )
                         .await;
-
-                    self.payload_to_fcu_request
-                        .lock()
-                        .insert(payload_id, (fork_choice_state, payload_attributes));
                 }
 
                 // We always return the value from the l2 client
