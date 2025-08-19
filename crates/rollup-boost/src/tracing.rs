@@ -12,7 +12,7 @@ use tracing_subscriber::filter::Targets;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
 
-use crate::cli::{Args, LogFormat};
+use crate::cli::{LogFormat, RollupBoostArgs};
 
 /// Span attribute keys that should be recorded as metric labels.
 ///
@@ -70,7 +70,7 @@ impl SpanProcessor for MetricsSpanProcessor {
 
         if let Some(gas_delta) = gas_delta {
             histogram!("block_building_gas_delta", &labels)
-                .record(gas_delta.parse::<u64>().unwrap_or_default() as f64);
+                .record(gas_delta.parse::<i64>().unwrap_or_default() as f64);
         }
 
         // 0 = no difference in tx count build via builder vs l2
@@ -84,7 +84,7 @@ impl SpanProcessor for MetricsSpanProcessor {
 
         if let Some(tx_count_delta) = tx_count_delta {
             histogram!("block_building_tx_count_delta", &labels)
-                .record(tx_count_delta.parse::<u64>().unwrap_or_default() as f64);
+                .record(tx_count_delta.parse::<i64>().unwrap_or_default() as f64);
         }
 
         histogram!(format!("{}_duration", span.name), &labels).record(duration);
@@ -99,7 +99,7 @@ impl SpanProcessor for MetricsSpanProcessor {
     }
 }
 
-pub fn init_tracing(args: &Args) -> eyre::Result<()> {
+pub fn init_tracing(args: &RollupBoostArgs) -> eyre::Result<()> {
     // Be cautious with snake_case and kebab-case here
     let filter_name = "rollup_boost".to_string();
 
