@@ -221,6 +221,16 @@ Then run the following command:
 ```sh
 just stress-test
 ```
+### Local Setup & Development
+
+Developers can run Rollup Boost locally to experiment with block building and proposer flows.
+
+```bash
+git clone https://github.com/base/rollup-boost.git
+cd rollup-boost
+make build
+make test
+
 
 ## License
 
