@@ -536,7 +536,7 @@ where
             // forward the fcu to the builder to keep it synced and immediately return the l2
             // response without awaiting the builder
             let builder_client = self.builder_client.clone();
-            let attrs_clone: Option<OpPayloadAttributes> = payload_attributes.clone();
+            let attrs_clone = payload_attributes.clone();
             tokio::spawn(async move {
                 // It is not critical to wait for the builder response here
                 // During moments of high load, Op-node can send hundreds of FCU requests
