@@ -198,7 +198,7 @@ where
                 tracing::Span::current().record("builder_has_payload", false);
                 return BuilderResult::Ok(BuilderPayloadResult {
                     payload: None,
-                    builder_api_failed: true,
+                    builder_api_failed: false,
                 });
             }
 
