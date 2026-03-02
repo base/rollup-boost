@@ -20,6 +20,7 @@ pub struct SubscriberOptions {
     pub ping_interval: Duration,
     pub pong_timeout: Duration,
     pub initial_grace_period: Duration,
+    pub listener_delay: Duration,
 }
 
 impl SubscriberOptions {
@@ -47,6 +48,11 @@ impl SubscriberOptions {
         self.initial_grace_period = initial_grace_period;
         self
     }
+
+    pub fn with_listener_delay(mut self, listener_delay: Duration) -> Self {
+        self.listener_delay = listener_delay;
+        self
+    }
 }
 
 impl Default for SubscriberOptions {
@@ -57,6 +63,7 @@ impl Default for SubscriberOptions {
             ping_interval: Duration::from_secs(1),
             pong_timeout: Duration::from_secs(2),
             initial_grace_period: Duration::from_secs(5),
+            listener_delay: Duration::ZERO,
         }
     }
 }
@@ -258,6 +265,9 @@ where
                 );
                 self.metrics
                     .message_received_from_upstream(self.uri.to_string().as_str());
+                if !self.options.listener_delay.is_zero() {
+                    tokio::time::sleep(self.options.listener_delay).await;
+                }
                 (self.handler)(text.to_string());
             }
             Message::Binary(data) => {

@@ -179,6 +179,14 @@ struct Args {
         help = "Timeout in milliseconds for sending messages to clients"
     )]
     client_send_timeout_ms: u64,
+
+    #[arg(
+        long,
+        env,
+        default_value = "0",
+        help = "Delay in milliseconds before broadcasting received messages to clients"
+    )]
+    listener_delay_ms: u64,
 }
 
 #[tokio::main]
@@ -301,7 +309,8 @@ async fn main() {
             .with_ping_interval(Duration::from_millis(args.subscriber_ping_interval_ms))
             .with_pong_timeout(Duration::from_millis(args.subscriber_pong_timeout_ms))
             .with_backoff_initial_interval(Duration::from_millis(500))
-            .with_initial_grace_period(Duration::from_secs(5));
+            .with_initial_grace_period(Duration::from_secs(5))
+            .with_listener_delay(Duration::from_millis(args.listener_delay_ms));
 
         let mut subscriber =
             WebsocketSubscriber::new(uri_clone.clone(), listener_clone, metrics_clone, options);
